@@ -662,6 +662,58 @@ console.log(JSON.stringify([
     assert json.loads(run.stdout) == [True, False, True]
 
 
+def test_omp_prune_active_preserves_order():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    ext = os.path.join(PLUGIN, "pi", "tokeneconomizer.ts")
+    script = """
+const { pathToFileURL } = await import("node:url");
+const { pruneActive } = await import(pathToFileURL(process.argv[1]).href);
+const active = ["read", "bash", "grep", "edit"];
+console.log(JSON.stringify([
+  pruneActive(active, ["edit", "bash", "unknown"]),
+  pruneActive(active, ["unknown"]),
+  pruneActive(active, []),
+  active,
+]));
+"""
+    run = subprocess.run([node, "--experimental-strip-types", "--no-warnings",
+                          "--input-type=module", "-e", script, ext],
+                         capture_output=True, text=True, timeout=60)
+    if run.returncode and "strip-types" in run.stderr:
+        pytest.skip("this node cannot load TypeScript")
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == [
+        ["read", "grep"], ["read", "bash", "grep", "edit"],
+        ["read", "bash", "grep", "edit"], ["read", "bash", "grep", "edit"]]
+
+
+def test_pi_exit_code_uses_structured_content_or_omp_details():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    ext = os.path.join(PLUGIN, "pi", "tokeneconomizer.ts")
+    script = """
+const { pathToFileURL } = await import("node:url");
+const { exitCodeOf } = await import(pathToFileURL(process.argv[1]).href);
+console.log(JSON.stringify([
+  exitCodeOf({ structuredContent: { exit_code: 0 }, details: { exitCode: 3 } }),
+  exitCodeOf({ details: { exitCode: 2 } }),
+  exitCodeOf({ structuredContent: { exit_code: "1" }, details: { exitCode: 4 } }),
+  exitCodeOf({}) === undefined,
+  exitCodeOf({ structuredContent: { exit_code: "1" }, details: { exitCode: "2" } }) === undefined,
+]));
+"""
+    run = subprocess.run([node, "--experimental-strip-types", "--no-warnings",
+                          "--input-type=module", "-e", script, ext],
+                         capture_output=True, text=True, timeout=60)
+    if run.returncode and "strip-types" in run.stderr:
+        pytest.skip("this node cannot load TypeScript")
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == [0, 2, 4, True, True]
+
+
 def test_the_plugin_directory_is_also_a_pi_package():
     """One directory, three agents: Pi loads the extension its `pi` manifest names, and that
     extension drives the same launchers the Claude Code and Codex hooks run."""
@@ -670,10 +722,11 @@ def test_the_plugin_directory_is_also_a_pi_package():
     (ext,) = pkg["pi"]["extensions"]
     src = open(os.path.join(PLUGIN, ext), encoding="utf-8").read()
     assert 'join(HERE, "..", "scripts")' in src and '"te-hook", ["--host", "pi"]' in src
-    # Exactly the dispatcher's five events. Not `tool_call`, the one Pi event that can block a
-    # call before it runs: the plugin guards nothing, on Pi as on the hook hosts.
+    # The dispatcher's five events, plus session switches. Not `tool_call`, the one Pi event
+    # that can block a call before it runs: the plugin guards nothing, on Pi as on the hook hosts.
     assert set(re.findall(r'pi\.on\("(\w+)"', src)) == {
-        "session_start", "before_agent_start", "tool_result", "agent_end", "session_shutdown"}
+        "session_start", "session_switch", "before_agent_start", "tool_result", "agent_end",
+        "session_shutdown"}
     # The repository root is the same package for `pi install git:github.com/...`, which clones
     # the repository and reads the manifest at its root: same package, same extension file.
     root = _json(os.path.dirname(PLUGIN), "package.json")

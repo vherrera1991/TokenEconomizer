@@ -28,6 +28,8 @@ so no extra API key is needed and the call is billed where the session is:
     it (a subscription signed in with `/login`, or an API key). A model whose provider an
     extension registers needs that extension loaded (`pi_extensions`); `pi_cli` names the `pi`
     to run, where the first on PATH is a wrapper the calls should not go through.
+  * oh-my-pi: the same bare completion through `omp --print --mode json`, using the binary
+    that runs the extension, so no Pi install is needed.
 
   * opencode: `opencode run --format json` in a throwaway directory, on the person's default
     model, with `bash`, `edit`, `webfetch` and `websearch` denied, no other plugin (`--pure` on
@@ -355,6 +357,8 @@ def codex_call(prompt, model="", cli="codex", timeout=TIMEOUT_S, effort=""):
 # Pi before 1.0 has no `--no-mcp` (and no built-in MCP to switch off); it rejects the flag.
 PI_FLAGS = ("--print", "--mode", "json", "--no-session", "--no-tools", "--no-extensions",
             "--no-skills", "--no-prompt-templates", "--no-context-files", "--offline")
+OMP_FLAGS = ("--print", "--mode", "json", "--no-session", "--no-tools", "--no-extensions",
+             "--no-skills", "--no-context-files", "--offline")
 
 
 def pi_extension_args(extensions):
@@ -387,6 +391,23 @@ def pi_call(prompt, model="", cli="pi", timeout=TIMEOUT_S, extensions=()):
     if usage:
         usage.pop("cost_usd", None)
         usage["model"] = usage.get("model") or model or "pi"
+        eff, _ = accounting.effective(usage)
+    return text, eff
+
+
+def omp_call(prompt, model="", cli="omp", timeout=TIMEOUT_S, extensions=()):
+    model_args = ["--model", model] if model else []
+    cmd = [*program(cli), *OMP_FLAGS, *model_args, "--", prompt]
+    with tempfile.TemporaryDirectory(prefix="te-side-", ignore_cleanup_errors=True) as cwd:
+        out = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace",
+                             timeout=timeout, env=_env(), cwd=cwd, stdin=subprocess.DEVNULL)
+    text, usage = trace.pi_json_reply(out.stdout)
+    if not text:
+        _no_reply("omp", out)
+    eff = None
+    if usage:
+        usage.pop("cost_usd", None)
+        usage["model"] = usage.get("model") or model or "omp"
         eff, _ = accounting.effective(usage)
     return text, eff
 
@@ -979,6 +1000,8 @@ _CALLS = {"codex": "codex exec", "droid": "droid exec", "opencode": "opencode ru
 
 def call_name(host_name):
     """How a notice names this agent's side-call command: `claude -p`, `codex exec`, ..."""
+    if host_name == "pi" and os.environ.get("TE_OMP_SIDECALL") == "1":
+        return "omp -p"
     return _CALLS.get(host_name, f"{host_name} -p")
 
 
@@ -1007,6 +1030,9 @@ def _host_call(host_name, config):
     effort = getattr(config, f"{host_name}_paid_effort", "")
     kw = {"effort": effort} if effort else {}
     if host_name == "pi":
+        if os.environ.get("TE_OMP_SIDECALL") == "1":
+            cli = os.environ.get("TE_OMP_CLI") or "omp"
+            return lambda prompt, _m="agent": omp_call(prompt, model=model, cli=cli)
         cli = os.path.expanduser(config.pi_cli) if config.pi_cli else "pi"
         extensions = list(config.pi_extensions)
         return lambda prompt, _m="agent": pi_call(prompt, model=model, cli=cli,

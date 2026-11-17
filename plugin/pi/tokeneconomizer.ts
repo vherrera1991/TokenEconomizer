@@ -10,6 +10,7 @@
  *   session_start       -> SessionStart       the learned manual, kept for the session (a
  *                                             resumed one keeps the manual it carries, where
  *                                             the host replays it)
+ *   session_switch      -> SessionStart       in-process new/resume/fork: omp rebuilds the prompt and fetches facts again; Pi reuses the carried section when the branch has messages
  *   before_agent_start  -> UserPromptSubmit   opens a prompt-turn; the manual is set as the
  *                                             `tokeneconomizer` system-prompt section, on every
  *                                             prompt, because Pi diffs sections between runs and
@@ -44,6 +45,9 @@ const HERE = (() => {
 const SCRIPTS = join(HERE, "..", "scripts");
 const HOOK_TIMEOUT_MS = 60_000;
 const SECTION = "tokeneconomizer";
+let ompHost = false;
+const ompEnv = (): Record<string, string> =>
+  ompHost ? { TE_OMP_SIDECALL: "1", TE_OMP_CLI: process.execPath || "omp" } : {};
 
 const truthy = (v: string | undefined) => ["1", "true", "yes", "on"].includes((v ?? "").trim().toLowerCase());
 
@@ -105,7 +109,7 @@ function run(
 /** One dispatcher call; `{}` (no change) on any failure. */
 async function hook(payload: Record<string, unknown>, mode: string): Promise<any> {
   if (truthy(process.env.TE_SIDECALL) || truthy(process.env.TE_DISABLE)) return {};
-  const out = await run("te-hook", ["--host", "pi"], JSON.stringify(payload), mode);
+  const out = await run("te-hook", ["--host", "pi"], JSON.stringify(payload), mode, ompEnv());
   try {
     return JSON.parse(out.trim().split("\n").pop() || "{}") ?? {};
   } catch {
@@ -161,6 +165,17 @@ export function isOmp(ctx?: ExtensionContext): boolean {
   return /[\\/]\.omp[\\/]/.test(ctx?.sessionManager?.getSessionFile?.() ?? "");
 }
 
+export function pruneActive(active: string[], deny: string[]): string[] {
+  const denied = new Set(deny);
+  return active.filter((name) => !denied.has(name));
+}
+
+export function exitCodeOf(event: any): number | undefined {
+  if (typeof event?.structuredContent?.exit_code === "number") return event.structuredContent.exit_code;
+  if (typeof event?.details?.exitCode === "number") return event.details.exitCode;
+  return undefined;
+}
+
 /** The manual as Pi renders a section, for a host that takes bare system-prompt blocks. */
 function sectionText(text: string): string {
   return `<${SECTION}>\n${text}\n</${SECTION}>`;
@@ -177,22 +192,55 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
     cwd: ctx.cwd,
   });
 
-  pi.on("session_start", async (event, ctx) => {
+  const openSession = async (source: string, ctx: ExtensionContext, omp: boolean) => {
     prompts = 0;
-    const omp = isOmp(ctx);
+    turn = "";
     const entries = (ctx.sessionManager.getBranch?.() ?? []) as any[];
     const carried = entries.some((e) => e?.type === "message");
     // omp rebuilds the system prompt for a resumed session instead of replaying what the
     // extension appended, so the facts are asked for again: "startup" is the source that makes
     // the dispatcher offer them (the same text, so the conversation stays cache-stable).
-    const source = omp ? "startup" : carried ? "resume" : SOURCE[event.reason] ?? "startup";
-    const out = await hook({ ...base(ctx), hook_event_name: "SessionStart", source }, ctx.mode);
+    const dispatchSource = omp ? "startup" : carried ? "resume" : source;
+    const payload: Record<string, unknown> = { ...base(ctx), hook_event_name: "SessionStart", source: dispatchSource };
+    if (omp) {
+      try {
+        payload.tool_catalog = pi.getAllTools().map((tool) => tool.name);
+      } catch {
+        // A catalog failure must not prevent the session from starting.
+      }
+    }
+    const out = await hook(payload, ctx.mode);
     manual = omp
       ? out?.hookSpecificOutput?.additionalContext ?? ""
       : carried
         ? carriedSection(entries)
         : out?.hookSpecificOutput?.additionalContext ?? "";
     notify(ctx, out?.systemMessage);
+    if (omp) {
+      try {
+        const deny = out?.tokeneconomizer?.toolprune?.apply;
+        if (Array.isArray(deny) && deny.length > 0 && deny.every((name) => typeof name === "string")) {
+          const active = pi.getActiveTools();
+          const next = pruneActive(active, deny);
+          if (next.length < active.length) {
+            await pi.setActiveTools(next);
+            notify(ctx, `TokenEconomizer: removed ${active.length - next.length} tool(s) for this session; toolprune=off restores them next session.`);
+          }
+        }
+      } catch {
+        // Pruning must not prevent the learned facts from reaching the session.
+      }
+    }
+  };
+
+  pi.on("session_start", async (event, ctx) => {
+    ompHost = isOmp(ctx);
+    await openSession(SOURCE[event.reason] ?? "startup", ctx, ompHost);
+  });
+
+  pi.on("session_switch", async (event, ctx) => {
+    ompHost = isOmp(ctx);
+    await openSession(SOURCE[event.reason] ?? "startup", ctx, ompHost);
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
@@ -226,7 +274,6 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
       .filter((c: any) => c?.type === "text")
       .map((c: any) => c.text)
       .join("\n");
-    const structured = (event.structuredContent ?? {}) as Record<string, unknown>;
     const out = await hook(
       {
         ...base(ctx),
@@ -235,7 +282,7 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
         tool_name: event.toolName,
         tool_use_id: event.toolCallId,
         tool_input: event.input ?? {},
-        tool_response: { content, isError: event.isError, exit_code: structured.exit_code },
+        tool_response: { content, isError: event.isError, exit_code: exitCodeOf(event) },
       },
       ctx.mode,
     );
@@ -262,6 +309,7 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
       // The session id lets `te status` say when this session is recorded under the repository
       // it started in rather than the one `ctx.cwd` is in now.
       const out = await run("te", ["--host", "pi", "--cwd", ctx.cwd, ...argv], "", ctx.mode, {
+        ...ompEnv(),
         TE_SESSION_ID: ctx.sessionManager.getSessionId(),
       });
       notify(ctx, out.trim() || "te: no output (is Python 3.10+ on PATH?)");

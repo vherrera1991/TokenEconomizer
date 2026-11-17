@@ -152,6 +152,10 @@ def enough_evidence(sessions, prompts, cfg, high_risk=False):
             or sessions >= cfg.toolprune_sessions * k)
 
 
+def _omp_host(ctx):
+    return ctx.host.name == "pi" and ctx.env.get("TE_OMP_SIDECALL") == "1"
+
+
 def _fold_toolprune(ctx, adapter, run_dir, session_id, transcript=None, workdir=None,
                     prompts=None, imported=False):
     """Tool pruning's evidence: the sessions a tool went unused (`ToolingStage`'s streaks) and
@@ -164,7 +168,7 @@ def _fold_toolprune(ctx, adapter, run_dir, session_id, transcript=None, workdir=
     sessions the plugin saw are also counted on their own (`live_streaks`), and `auto` holds
     only what they alone are enough evidence for; the rest of the proposal waits for
     `toolprune apply`, and the next session start says so."""
-    if not denylist.supports(ctx.host.name) or ctx.config.toolprune == "off":
+    if (not denylist.supports(ctx.host.name) and not _omp_host(ctx)) or ctx.config.toolprune == "off":
         return None
     if ctx.host.name == "codex":
         return _fold_toolprune_codex(ctx, adapter, session_id, transcript, workdir, prompts)
@@ -185,8 +189,8 @@ def _fold_toolprune(ctx, adapter, run_dir, session_id, transcript=None, workdir=
                       (st.get("prompt_streaks") or stage.tool_unused_streaks).items()}
     stage.catalog_tools = set(st.get("catalog_tools", []))
     stage.catalog_desc = dict(st.get("catalog_desc") or {})
-    applied = denylist.applied_for(ctx.store, ctx.repo.root, ctx.host.name)
-    kept = set(denylist.kept_for(ctx.store, ctx.repo.root, ctx.host.name))   # given back
+    applied = [] if _omp_host(ctx) else denylist.applied_for(ctx.store, ctx.repo.root, host)
+    kept = set() if _omp_host(ctx) else set(denylist.kept_for(ctx.store, ctx.repo.root, host))
     # The mask this session actually ran under: none, for one from before the plugin.
     stage._exclude_tools = [] if imported else list(applied)
     # A tool that has since become protected (the web tools, from this version on) comes back:
@@ -254,7 +258,18 @@ def _fold_toolprune(ctx, adapter, run_dir, session_id, transcript=None, workdir=
         proposal = [t for t in raw if t not in applied and t not in kept]
     doc["proposal"] = proposal
     doc["new_in_proposal"] = sorted(set(proposal) - set(st.get("proposal", [])))
-    if imported:
+    if _omp_host(ctx):
+        if imported:
+            if isinstance(st.get("needs_apply"), list):
+                doc["needs_apply"] = st["needs_apply"]
+        elif ctx.config.toolprune == "auto":
+            held = proposal
+            if imported_n:
+                held = [t for t in proposal if enough_evidence(
+                    live_streaks.get(t, 0), live_prompts.get(t, 0), ctx.config,
+                    high_risk=t in live_adapter.HIGH_RISK)]
+            doc["needs_apply"] = list(held)
+    elif imported:
         # A session from the agent's history writes nothing and drops nothing that waits; what
         # it proposes waits for `toolprune apply`.
         for key in ("auto_pending", "auto_apply_refused"):
@@ -549,7 +564,7 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
                     workdir=workdir, prompts=prompts, imported=imported)
             record["injection"] = inj
             record["untool"] = unt
-            if unt and unt.get("pending") and not imported:
+            if unt and unt.get("pending") and not imported and not _omp_host(ctx):
                 schedule_pending(ctx)
             if not imported:
                 ctx.host.settle(transcript)
@@ -567,7 +582,7 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
             "nudges": int(sess.get("nudges", 0)), "aborts": int(sess.get("aborts", 0)),
             "injected_chars": int(sess.get("injected_chars", 0)),
             # A session from before the plugin ran under no deny list of its.
-            "untool_applied": [] if imported else denylist.applied_for(
+            "untool_applied": [] if imported or _omp_host(ctx) else denylist.applied_for(
                 ctx.store, ctx.repo.root, ctx.host.name),
             "overhead": {
                 "optimizer_tokens": ((record.get("injection") or {}).get("optimizer_tokens")

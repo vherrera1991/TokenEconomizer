@@ -31,6 +31,8 @@ from .. import loopguard
 from . import denylist, fold, history, hookqueue, repomap, repos, sidecall
 from .hosts import merge_outputs
 from .paths import ensure_launcher
+from .adapter import catalog_path
+from .store import Store
 
 TURN_HISTORY = 200
 
@@ -106,6 +108,14 @@ class LiveController:
     # ---- SessionStart -----------------------------------------------------------------
     def session_start(self):
         source = self.p.get("source") or "startup"
+        catalog = self.p.get("tool_catalog")
+        if (self.host.name == "pi" and self.ctx.env.get("TE_OMP_SIDECALL") == "1"
+                and isinstance(catalog, list) and all(isinstance(t, str) for t in catalog)):
+            try:
+                path = catalog_path(self.ctx.root, "pi")
+                Store(os.path.dirname(path)).write(os.path.basename(path), {"tools": catalog})
+            except Exception:
+                self._record_error()
         s = self._session()
         s["source"] = source
         s.setdefault("cwd", self.host.cwd(self.p, self.ctx.env))
@@ -145,6 +155,10 @@ class LiveController:
         if (self.cfg.toolprune != "off" and denylist.supports(self.host.name)
                 and not self.cfg.shadow):
             outputs.extend(self._toolprune_notices(seen))
+
+        apply = self._omp_toolprune_apply()
+        if apply:
+            outputs.append({"tokeneconomizer": {"toolprune": {"apply": apply}}})
 
         pause = sidecall.paused(self.host.name, self.ctx.root)
         calls_a_model = "distiller" in self.cfg.microskills or self.cfg.loopguard != "off"
@@ -207,10 +221,21 @@ class LiveController:
         except Exception:
             pass
 
+    def _omp_toolprune_apply(self):
+        if (self.host.name != "pi" or self.ctx.env.get("TE_OMP_SIDECALL") != "1"
+                or self.cfg.toolprune != "auto" or self.cfg.shadow):
+            return []
+        pending = (self.store.read("untool.json") or {}).get("needs_apply")
+        if not isinstance(pending, list):
+            return []
+        return list(dict.fromkeys(item for item in pending if isinstance(item, str)))
+
     def _toolprune_notices(self, seen):
         """The deny list's lines at session start, each said once: what `auto` removed from this
         checkout's sessions (from this one on), and a proposal still waiting -- under `propose`,
         or when `auto` could not write the settings file."""
+        if self.host.name == "pi" and self.ctx.env.get("TE_OMP_SIDECALL") == "1":
+            return []
         out = []
         cmd, unit = self._cmd("toolprune"), denylist.unit(self.host.name)
         unt = self.store.read("untool.json") or {}

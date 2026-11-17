@@ -32,6 +32,109 @@ def _git_repo(root, remote=None):
     return root
 
 
+def test_omp_session_start_records_tool_catalog(tmp_path):
+    from tests.test_live_hooks import call
+    from tokeneconomizer.plugin.adapter import catalog_path
+
+    repo = _git_repo(str(tmp_path / "repo"))
+    env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1",
+           "TE_MICROSKILLS": "off", "PATH": os.environ.get("PATH", "")}
+    payload = {"hook_event_name": "SessionStart", "session_id": "s", "cwd": repo,
+               "tool_catalog": ["bash", "grep"]}
+    path = catalog_path(env["TOKENECONOMIZER_HOME"], "pi")
+    call(env, payload, "pi")
+    assert not os.path.exists(path)
+    call(dict(env, TE_OMP_SIDECALL="1"), payload, "pi")
+    with open(path, encoding="utf-8") as fh:
+        assert json.load(fh) == {"tools": ["bash", "grep"]}
+
+
+def test_omp_toolprune_folds_recorded_catalog(tmp_path):
+    from tests.test_live_hooks import call, store_for
+    from tokeneconomizer.plugin import fold
+    from tokeneconomizer.plugin.context import LiveContext
+
+    repo = _git_repo(str(tmp_path / "repo"))
+    env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1",
+           "TE_OMP_SIDECALL": "1", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "auto",
+           "TE_TOOLPRUNE_EVIDENCE": "1", "TE_TOOLPRUNE_MIN_SESSIONS": "1",
+           "TE_TOOLPRUNE_SESSIONS": "1", "PATH": os.environ.get("PATH", "")}
+    transcript = _pi_session(str(tmp_path / "session.jsonl"), cwd=repo, sid="s")
+    payload = {"hook_event_name": "SessionStart", "session_id": "s", "cwd": repo,
+               "transcript_path": transcript, "tool_catalog": ["bash", "edit", "browser"]}
+    call(env, payload, "pi")
+    ctx = LiveContext.build(hosts.HOSTS["pi"](), repo, env)
+    result = fold.fold_session(ctx, "s")
+    doc = store_for(env, repo, host="pi").read("untool.json")
+    assert result["untool"]["pending"] is False
+    assert doc["catalog_tools"] == ["bash", "browser", "edit"]
+    assert doc["proposal"] == doc["needs_apply"] == ["browser"]
+    assert "auto_pending" not in doc
+    assert not os.path.exists(os.path.join(repo, ".pi", "settings.json"))
+    payload["session_id"] = "next"
+    assert call(env, payload, "pi")["tokeneconomizer"]["toolprune"]["apply"] == ["browser"]
+
+
+def test_omp_imported_evidence_does_not_schedule_pruning(tmp_path):
+    from tests.test_live_hooks import call, store_for
+    from tokeneconomizer.plugin import fold
+    from tokeneconomizer.plugin.context import LiveContext
+
+    repo = _git_repo(str(tmp_path / "repo"))
+    env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1",
+           "TE_OMP_SIDECALL": "1", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "auto",
+           "TE_TOOLPRUNE_EVIDENCE": "2", "TE_TOOLPRUNE_MIN_SESSIONS": "2",
+           "TE_TOOLPRUNE_SESSIONS": "2", "PATH": os.environ.get("PATH", "")}
+    transcript = _pi_session(str(tmp_path / "session.jsonl"), cwd=repo, sid="s")
+    payload = {"hook_event_name": "SessionStart", "session_id": "s", "cwd": repo,
+               "transcript_path": transcript, "tool_catalog": ["bash", "edit", "browser"]}
+    call(env, payload, "pi")
+    ctx = LiveContext.build(hosts.HOSTS["pi"](), repo, env)
+    fold.fold_session(ctx, "s")
+    with ctx.store.locked("fold") as locked:
+        assert locked
+        fold.fold_locked(ctx, "imported", transcript_path=transcript, imported=True)
+    store = store_for(env, repo, host="pi")
+    doc = store.read("untool.json")
+    assert doc["proposal"] == ["browser"]
+    assert not doc.get("needs_apply")
+    assert "auto_pending" not in doc
+    assert not os.path.exists(os.path.join(repo, ".pi", "settings.json"))
+    payload["session_id"] = "live"
+    assert "tokeneconomizer" not in call(env, payload, "pi")
+    fold.fold_session(ctx, "live")
+    assert not store.read("untool.json").get("needs_apply")
+    payload["session_id"] = "live-again"
+    assert "tokeneconomizer" not in call(env, payload, "pi")
+    fold.fold_session(ctx, "live-again")
+    assert store.read("untool.json")["needs_apply"] == ["browser"]
+    with ctx.store.locked("fold") as locked:
+        assert locked
+        fold.fold_locked(ctx, "imported-again", transcript_path=transcript, imported=True)
+    assert store.read("untool.json")["needs_apply"] == ["browser"]
+
+
+def test_omp_session_start_applies_pending_toolprune(tmp_path):
+    from tests.test_live_hooks import call, store_for
+
+    repo = _git_repo(str(tmp_path / "repo"))
+    env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1",
+           "TE_OMP_SIDECALL": "1", "TE_MICROSKILLS": "off",
+           "PATH": os.environ.get("PATH", "")}
+    store_for(env, repo, host="pi").write(
+        "untool.json", {"needs_apply": ["bash", "bash", 1], "proposal": ["bash"]})
+    payload = {"hook_event_name": "SessionStart", "session_id": "s", "cwd": repo}
+    result = call(env, payload, "pi")
+    assert result["tokeneconomizer"] == {"toolprune": {"apply": ["bash"]}}
+    assert "toolprune" not in result.get("systemMessage", "")
+    assert "tokeneconomizer" not in call({k: v for k, v in env.items()
+                                          if k != "TE_OMP_SIDECALL"}, payload, "pi")
+    for mode in ("propose", "off"):
+        assert "tokeneconomizer" not in call(dict(env, TE_TOOLPRUNE=mode), payload, "pi")
+    assert "tokeneconomizer" not in call(dict(env, TE_SHADOW="1"), payload, "pi")
+    assert "tokeneconomizer" not in call(env, payload, "claude")
+
+
 def test_repo_identity_follows_the_remote_not_the_spelling(tmp_path):
     a = _git_repo(str(tmp_path / "a"), "git@github.com:Owner/Repo.git")
     b = _git_repo(str(tmp_path / "b" / "repo"), "https://github.com/owner/repo")
@@ -1312,6 +1415,53 @@ def test_a_pi_side_call_is_a_bare_run_on_the_persons_own_pi(monkeypatch):
     calls.clear()
     sidecall.pi_call("propose facts", model="openrouter/anthropic/claude-haiku-4.5")
     assert calls[-1][0][-4:-2] == ["--model", "openrouter/anthropic/claude-haiku-4.5"]
+
+
+@pytest.mark.real_sidecalls
+def test_an_omp_side_call_is_a_bare_run_on_the_persons_own_omp(monkeypatch):
+    import subprocess
+    from tokeneconomizer.plugin import sidecall
+    monkeypatch.setattr(sidecall, "program", lambda cli: [cli])
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append((cmd, kw))
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="\n".join(json.dumps(e) for e in PI_JSON_RUN), stderr="")
+
+    monkeypatch.setattr(sidecall.subprocess, "run", fake_run)
+    text, eff = sidecall.omp_call("propose facts")
+    assert text == "- use python -m pytest" and eff and eff > 0
+    (cmd, kw), = calls
+    assert cmd[:4] == ["omp", "--print", "--mode", "json"]
+    assert cmd[-2:] == ["--", "propose facts"]
+    for flag in ("--no-session", "--no-tools", "--no-extensions", "--no-skills",
+                 "--no-context-files", "--offline"):
+        assert flag in cmd
+    assert "--no-mcp" not in cmd and "--no-prompt-templates" not in cmd
+    assert kw["env"]["TE_SIDECALL"] == "1" and kw["stdin"] is subprocess.DEVNULL
+    sidecall.omp_call("propose facts", model="provider/model")
+    assert calls[-1][0][-4:] == ["--model", "provider/model", "--", "propose facts"]
+
+
+@pytest.mark.real_sidecalls
+def test_pi_runner_uses_omp_only_under_its_marker(monkeypatch):
+    from tokeneconomizer.plugin import sidecall
+    calls = []
+    monkeypatch.setattr(sidecall, "omp_call",
+                        lambda prompt, **kw: (calls.append(("omp", prompt, kw)) or ("omp", 1)))
+    monkeypatch.setattr(sidecall, "pi_call",
+                        lambda prompt, **kw: (calls.append(("pi", prompt, kw)) or ("pi", 1)))
+    cfg = live_config.LiveConfig()
+    monkeypatch.setenv("TE_OMP_SIDECALL", "1")
+    monkeypatch.setenv("TE_OMP_CLI", "/opt/omp")
+    assert sidecall.runner_for("pi", cfg)("hello") == ("omp", 1)
+    assert calls == [("omp", "hello", {"model": "", "cli": "/opt/omp"})]
+    assert sidecall.call_name("pi") == "omp -p"
+    monkeypatch.delenv("TE_OMP_SIDECALL")
+    assert sidecall.runner_for("pi", cfg)("hello") == ("pi", 1)
+    assert calls[-1][0] == "pi"
+    assert sidecall.call_name("pi") == "pi -p"
 
 
 @pytest.mark.real_sidecalls

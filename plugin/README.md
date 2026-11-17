@@ -374,9 +374,14 @@ What differs, and why (verified on omp 18.22.0):
   so the converted envelope keeps the cwd its shell commands ran in. `te` from a shell inside
   `omp` resolves to `pi`: `omp` exports `OMPCODE=1` next to the `CLAUDECODE=1` that would
   otherwise make `te` read the state as Claude Code's.
-- **Tool pruning does not apply**, as on Pi.
-- **The plugin's own model calls still run `pi`**, not `omp` (the proposer and the judge). They
-  need a working Pi install; facts that need no model call are learned either way.
+- **Tool pruning is session-local.** At session start, the extension records `omp`'s loaded tools
+  as the catalog for evidence. Under `toolprune=auto`, it applies the pending deny list with
+  `setActiveTools` at every session start or switch because `omp` does not persist the active set.
+  No settings file is written, and `omp` keeps its own essential tools. `toolprune=off` restores
+  all tools next session; per-tool `restore` is not available on `omp` yet.
+- **The plugin's own model calls run `omp --print --mode json`** through the omp binary running
+  the extension, using omp's model, authentication and configuration; Pi is not required. Python
+  still performs the learning and fold work.
 - `/te` runs through `omp`'s own `registerCommand`, so it is available on the same session
   command surface as the other extensions.
 
