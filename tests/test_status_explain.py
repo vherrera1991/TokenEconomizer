@@ -176,6 +176,46 @@ def test_unsupported_host_is_not_told_to_collect_a_catalog(status):
     assert "refresh-catalog" not in out
 
 
+def test_omp_status_and_toolprune_are_session_local(status, capsys, monkeypatch):
+    ctx, run = status
+    ctx.host = hosts.Pi()
+    ctx.env["TE_OMP_SIDECALL"] = "1"
+    ctx.config.toolprune = "auto"
+    ctx.store.write("untool.json", {"sessions": 4, "prompts": 12, "catalog_source": "omp",
+                                   "proposal": ["unused"], "needs_apply": ["unused", "unused", 2]})
+    out = run("--explain")
+    assert "4 sessions (12 prompts) observed" in out
+    assert "applied: unused" in out and "not available" not in out
+    assert "deny rules" not in out
+    assert "removed from the tool list at each session start" in out
+    assert "unapplied proposal" not in out
+    data = json.loads(run("--json", "--explain"))
+    assert data["toolprune"]["applied"] == ["unused"]
+    ctx.store.write("untool.json", {"sessions": 4, "proposal": [], "needs_apply": ["unused"]})
+    assert "removed from the tool list at each session start" in run("--explain")
+    ctx.store.write("untool.json", {"sessions": 4, "proposal": ["unused"]})
+    out = run("--explain")
+    assert "proposal recorded; toolprune=auto applies it at the next session start" in out
+    assert "awaiting approval" not in out
+    ctx.store.write("untool.json", {"sessions": 4, "prompts": 12, "catalog_source": "omp",
+                                   "proposal": ["unused"], "needs_apply": ["unused", "unused", 2]})
+
+    from tokeneconomizer.plugin import denylist
+    def forbidden(*args, **kwargs):
+        raise AssertionError("omp must not read settings")
+    monkeypatch.setattr(denylist, "settings_path", forbidden)
+    monkeypatch.setattr(denylist, "applied_for", forbidden)
+    monkeypatch.setattr(denylist, "kept_for", forbidden)
+    args = ["--host", "pi", "--cwd", ctx.repo.root, "toolprune"]
+    assert cli.main(args + ["show"]) == 0
+    out = capsys.readouterr().out
+    assert "proposed: unused" in out and "applied at session start: unused" in out
+    assert "settings" not in out and "refresh-catalog" not in out
+    assert cli.main(args + ["apply"]) == 1
+    assert not (Path(ctx.repo.root) / ".claude" / "settings.local.json").exists()
+    assert not (Path(ctx.repo.root) / ".pi" / "settings.json").exists()
+
+
 def test_loopguard_uses_the_configured_warmup_and_does_not_infer_productivity(status):
     ctx, run = status
     ctx.config.loopguard_thresholds["envelope_min_samples"] = 2

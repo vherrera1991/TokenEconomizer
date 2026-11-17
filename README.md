@@ -364,7 +364,8 @@ commands. They have the same names on every agent; only the way you type them di
 |---|---|
 | `status` | what it learned and did here, and what your sessions cost |
 | `microskills` | the facts it injects, and those still forming |
-| `toolprune` | the tools it left out, and the evidence (not on Pi, opencode, Hermes Agent, the Antigravity CLI or Factory Droid) |
+| `microskills on` / `microskills off` | turn micro-skills on or off in this repository |
+| `toolprune` | the tools it left out, and the evidence (not on Pi outside oh-my-pi, opencode, Hermes Agent, the Antigravity CLI or Factory Droid; omp prunes session-locally) |
 | `toolprune restore` | give them back; they will not be removed again |
 | `config` | every setting in effect |
 | `config set microskills=on` | turn a mechanism on (or `=off`) in this repository; add `--global` for every repository |

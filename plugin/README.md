@@ -397,6 +397,8 @@ What differs, and why (verified on omp 18.22.0, except where a bullet says other
   `setActiveTools` at every session start or switch because `omp` does not persist the active set.
   No settings file is written, and `omp` keeps its own essential tools. `toolprune=off` restores
   all tools next session; per-tool `restore` is not available on `omp` yet.
+- `/te microskills on|off` sets the same repository setting as `/te config set microskills=on|off`;
+  `/te status` and `/te toolprune` report session-local pruning.
 - **The live loop guard is native in the extension.** `before_agent_start` opens the turn and
   `tool_result` folds it, and a redirect goes out as a steering message. Python's `Stop` and
   `SessionEnd` still record the envelope and fold the session, and the background judge is still

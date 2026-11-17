@@ -28,7 +28,7 @@ from .. import trace
 from . import accounting, denylist, sidecall
 from . import adapter as live_adapter
 from .adapter import LiveAdapter, load_catalog
-from .hosts import FoldLater
+from .hosts import FoldLater, is_omp
 
 STALE_S = 600          # an unfolded session whose transcript is quiet this long is over
 # A fold never runs in a hook -- it is a detached process, or `te fold` -- so it can wait for
@@ -153,7 +153,7 @@ def enough_evidence(sessions, prompts, cfg, high_risk=False):
 
 
 def _omp_host(ctx):
-    return ctx.host.name == "pi" and ctx.env.get("TE_OMP_SIDECALL") == "1"
+    return ctx.host.name == "pi" and is_omp(ctx.env)
 
 
 def _fold_toolprune(ctx, adapter, run_dir, session_id, transcript=None, workdir=None,

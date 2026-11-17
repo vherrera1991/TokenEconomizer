@@ -1322,6 +1322,11 @@ HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "droid": Droi
          "antigravity": Antigravity}
 
 
+def is_omp(env):
+    """Pi and omp share a host name; the extension sets this marker for omp."""
+    return (env or {}).get("TE_OMP_SIDECALL") == "1"
+
+
 def default_host(env=None, recent=None):
     """The host a `te` command run without `--host` is about: `TE_HOST`, else the agent whose
     shell it runs in (Claude Code marks its shell `CLAUDECODE=1`, Copilot `COPILOT_CLI=1`),

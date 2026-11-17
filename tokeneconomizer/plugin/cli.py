@@ -3,6 +3,7 @@
     te status                         what it has learned for this repository, and what it did
     te status --explain               explain the current settings and saved learning state
     te microskills                    the facts it injects, and the ones still forming
+    te microskills on | off           turn micro-skills on or off in this repository
     te microskills forget ID ...      stop injecting the facts with these ids (as listed by
                                       `te microskills`); they are not learned again
                                       under that id or from the same evidence
@@ -118,6 +119,14 @@ def _session_note(ctx, env=None):
 
 
 # ---- status / microskills ------------------------------------------------------------------
+def _omp_host(ctx):
+    return ctx.host.name == "pi" and hosts.is_omp(ctx.env)
+
+
+def _toolprune_available(ctx):
+    return denylist.supports(ctx.host.name) or _omp_host(ctx)
+
+
 def _status_explanations(ctx, inj, unt, tracker, applied):
     """Describe the latest saved state, never infer why a past turn did not intervene.
 
@@ -165,7 +174,7 @@ def _status_explanations(ctx, inj, unt, tracker, applied):
                 why = "no facts tracked in the last learning snapshot"
         notes["microskills"] = f"{why}; {facts_detail}"
 
-    if not denylist.supports(host):
+    if not _toolprune_available(ctx):
         notes["toolprune"] = f"tool pruning is not available on {host}"
     elif cfg.toolprune == "off":
         notes["toolprune"] = "off; previously applied rules are not restored automatically"
@@ -174,7 +183,18 @@ def _status_explanations(ctx, inj, unt, tracker, applied):
         held = unt.get("auto_pending")
         pending = held.get("items") if isinstance(held, dict) else None
         pending = pending if isinstance(pending, list) else []
-        if proposal:
+        if _omp_host(ctx):
+            if cfg.shadow:
+                why = "proposal recorded in shadow mode"
+            elif applied:
+                why = "removed from the tool list at each session start"
+            elif proposal:
+                why = "proposal recorded; toolprune=auto applies it at the next session start"
+            elif not unt:
+                why = "no tool-usage snapshot recorded for this agent/repository yet"
+            else:
+                why = "no eligible proposal recorded"
+        elif proposal:
             if cfg.shadow:
                 why = "proposal recorded in shadow mode"
             elif cfg.toolprune == "propose":
@@ -235,8 +255,10 @@ def cmd_status(args):
                       "imported_prompts": int(unt.get("imported_prompts", 0) or 0),
                       "catalog_source": unt.get("catalog_source"),
                       "proposal": unt.get("proposal", []),
-                      "applied": denylist.applied_for(ctx.store, ctx.repo.root,
-                                                      ctx.host.name)},
+                      "applied": (list(dict.fromkeys(t for t in unt.get("needs_apply") or []
+                                                     if isinstance(t, str)))
+                                  if _omp_host(ctx) else
+                                  denylist.applied_for(ctx.store, ctx.repo.root, ctx.host.name))},
         "loopguard": {"mode": cfg.loopguard, "envelope": env_tracker.envelope,
                       "ended_green_turns": len(env_tracker.resolved_turns)},
         "history": history.summary(ctx),
@@ -278,7 +300,7 @@ def cmd_status(args):
           + (f", +{i['imported_sessions']} from earlier history" if i["imported_sessions"]
              else "") + ")")
     u = out["toolprune"]
-    if not denylist.supports(ctx.host.name):
+    if not _toolprune_available(ctx):
         print("  toolprune    not available on this host")
     else:
         src = u["catalog_source"] or "none yet"
@@ -301,6 +323,29 @@ def cmd_status(args):
 def cmd_microskills(args):
     if args.action in ("forget", "unforget"):
         return _microskills_forget(args)
+    if args.action in ("on", "off"):
+        if args.ids:
+            print(f"`microskills {args.action}` takes no ids")
+            return 2
+        ctx = _ctx(args)
+        path = os.path.join(os.path.dirname(ctx.store.base), "config.json")
+        if _refuse_unwritable(os.path.dirname(path)):
+            return 1
+        try:
+            write_config(path, {"microskills": args.action})
+        except ValueError as e:
+            print(f"rejected: {e}")
+            return 2
+        if args.action == "on":
+            print(f"micro-skills is on here: facts are learned from finished sessions and "
+                  f"injected from the next session start.\n{path}")
+            if sidecall.resume(ctx.host.name, ctx.root):
+                print(f"the plugin's model calls through `{sidecall.call_name(ctx.host.name)}` "
+                      f"will be tried again")
+        else:
+            print(f"micro-skills is off here: learned facts are kept and nothing is injected "
+                  f"from the next session.\n{path}")
+        return 0
     if args.ids:
         print(f"`microskills {args.action}` takes no ids; did you mean `microskills forget "
               f"{' '.join(args.ids)}`?")
@@ -379,6 +424,12 @@ def _toolprune_show(ctx, unt):
     host = ctx.host.name
     print(f"sessions observed: {unt.get('sessions', 0)} ({unt.get('prompts', 0)} prompts)  "
           f"catalog: {unt.get('catalog_source') or 'none yet'}")
+    if _omp_host(ctx):
+        applied = list(dict.fromkeys(t for t in unt.get("needs_apply") or []
+                                     if isinstance(t, str)))
+        print(f"proposed: {', '.join(_proposal(ctx, unt)) or '-'}")
+        print(f"applied at session start: {', '.join(applied) or '-'}")
+        return 0
     print(f"applied ({denylist.unit(host, plural=True)} this plugin added to "
           f"{denylist.settings_path(ctx.repo.root, host)}): "
           f"{', '.join(denylist.applied_for(ctx.store, ctx.repo.root, host)) or '-'}")
@@ -477,6 +528,8 @@ def _wait_and_apply(args):
 def _proposal(ctx, unt):
     """The proposal, less what this checkout already applied or gave back: the clones of one
     repository share its evidence, and one of them may have applied the list before another."""
+    if _omp_host(ctx):
+        return fold.unprotected(ctx, list(unt.get("proposal") or []))
     mine = set(denylist.applied_for(ctx.store, ctx.repo.root, ctx.host.name))
     mine |= set(denylist.kept_for(ctx.store, ctx.repo.root, ctx.host.name))
     return fold.unprotected(ctx, [t for t in unt.get("proposal", []) if t not in mine])
@@ -485,13 +538,17 @@ def _proposal(ctx, unt):
 def cmd_toolprune(args):
     ctx = _ctx(args)
     host = ctx.host.name
-    if not denylist.supports(host):
+    if not _toolprune_available(ctx):
         print(f"tool pruning is not available on {host} (it declares only a handful of tools)")
         return 1
     unt = ctx.store.read("untool.json") or {}
     action = args.action
     if action == "show":
         return _toolprune_show(ctx, unt)
+    if _omp_host(ctx):
+        print("omp applies the pending list itself at session start under toolprune=auto; "
+              "there is no settings file to write and per-tool restore is not available.")
+        return 1
     if action in ("apply", "restore") and _refuse_unwritable(ctx.store.base):
         return 1
     if action == "apply":
@@ -1000,9 +1057,10 @@ def build_parser():
                    help="briefly explain current settings and saved state (no model calls)")
     p.set_defaults(fn=cmd_status)
     p = add("microskills", "facts")
-    p.add_argument("action", nargs="?", default="show", choices=("show", "forget", "unforget"),
-                   help="show the facts (default); forget: stop injecting them and never learn "
-                        "them again; unforget: bring forgotten facts back")
+    p.add_argument("action", nargs="?", default="show",
+                   choices=("show", "on", "off", "forget", "unforget"),
+                   help="show the facts (default); on/off: change the repository setting; "
+                        "forget: stop injecting facts; unforget: bring forgotten facts back")
     p.add_argument("ids", nargs="*", metavar="ID", help="fact ids, as `te microskills` lists them")
     p.set_defaults(fn=cmd_microskills)
     p = add("toolprune", "untool")

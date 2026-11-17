@@ -16,6 +16,28 @@ from tests.test_live_hooks import (GREEN, _first, _turn, env, repo, run_session,
                                    stuck_calls, trap_session)
 
 
+def test_microskills_on_off_argline(tmp_path, monkeypatch, capsys):
+    from tokeneconomizer.plugin import cli, hosts
+    from tokeneconomizer.plugin.context import LiveContext
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    monkeypatch.setenv("TOKENECONOMIZER_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("TE_OMP_SIDECALL", "1")
+    args = ["--host", "pi", "--cwd", str(repo_dir), "--argline"]
+    ctx = LiveContext.build(hosts.Pi(), str(repo_dir))
+    path = os.path.join(os.path.dirname(ctx.store.base), "config.json")
+    for action, expected in (("on", "envfacts+distiller"), ("off", "off")):
+        assert cli.main(args + [f"microskills {action}"]) == 0
+        with open(path, encoding="utf-8") as f:
+            assert json.load(f)["microskills"] == expected
+        assert "next session" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as exc:
+        cli.main(args + ["microskills sometimes"])
+    assert exc.value.code == 2
+    assert cli.main(args + ["microskills on x"]) == 2
+
+
 # ---- parsing ------------------------------------------------------------------------------
 @pytest.mark.parametrize("key,on", [("microskills", "envfacts+distiller"), ("toolprune", "auto"),
                                     ("loopguard", "nudge")])

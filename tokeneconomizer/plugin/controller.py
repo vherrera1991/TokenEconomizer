@@ -29,7 +29,7 @@ import traceback
 
 from .. import loopguard
 from . import denylist, fold, history, hookqueue, repomap, repos, sidecall
-from .hosts import merge_outputs
+from .hosts import is_omp, merge_outputs
 from .paths import ensure_launcher
 from .adapter import catalog_path
 from .store import Store
@@ -121,7 +121,7 @@ class LiveController:
     def session_start(self):
         source = self.p.get("source") or "startup"
         catalog = self.p.get("tool_catalog")
-        if (self.host.name == "pi" and self.ctx.env.get("TE_OMP_SIDECALL") == "1"
+        if (self.host.name == "pi" and is_omp(self.ctx.env)
                 and isinstance(catalog, list) and all(isinstance(t, str) for t in catalog)):
             try:
                 path = catalog_path(self.ctx.root, "pi")
@@ -240,7 +240,7 @@ class LiveController:
             pass
 
     def _omp_toolprune_apply(self):
-        if (self.host.name != "pi" or self.ctx.env.get("TE_OMP_SIDECALL") != "1"
+        if (self.host.name != "pi" or not is_omp(self.ctx.env)
                 or self.cfg.toolprune != "auto" or self.cfg.shadow):
             return []
         pending = (self.store.read("untool.json") or {}).get("needs_apply")
@@ -252,7 +252,7 @@ class LiveController:
         """The deny list's lines at session start, each said once: what `auto` removed from this
         checkout's sessions (from this one on), and a proposal still waiting -- under `propose`,
         or when `auto` could not write the settings file."""
-        if self.host.name == "pi" and self.ctx.env.get("TE_OMP_SIDECALL") == "1":
+        if self.host.name == "pi" and is_omp(self.ctx.env):
             return []
         out = []
         cmd, unit = self._cmd("toolprune"), denylist.unit(self.host.name)
