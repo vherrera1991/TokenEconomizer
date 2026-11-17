@@ -8,7 +8,8 @@
  * in the dispatcher; this file only translates.
  *
  *   session_start       -> SessionStart       the learned manual, kept for the session (a
- *                                             resumed one keeps the manual it carries)
+ *                                             resumed one keeps the manual it carries, where
+ *                                             the host replays it)
  *   before_agent_start  -> UserPromptSubmit   opens a prompt-turn; the manual is set as the
  *                                             `tokeneconomizer` system-prompt section, on every
  *                                             prompt, because Pi diffs sections between runs and
@@ -17,6 +18,12 @@
  *                                             message, a still-stuck notice as a UI notice
  *   agent_end           -> Stop               closes the turn
  *   session_shutdown    -> SessionEnd         hands the session to a detached fold
+ *
+ * oh-my-pi (`omp`) loads this extension too, and needs two things said differently: its
+ * `before_agent_start` carries `systemPrompt: string[]` with no `systemPromptOptions`, so the
+ * manual is appended to that array instead of being set as a named section; and a resumed
+ * session rebuilds its system prompt rather than replaying what an extension appended (verified
+ * on omp 18.22.0), so the facts are offered again at every start, not only a fresh one.
  *
  * Like the hooks on the other agents it fails open: a dispatcher that is missing, slow or
  * broken answers "no change". It does nothing under TE_SIDECALL=1 (the plugin's own side
@@ -149,6 +156,16 @@ export function carriedSection(entries: any[]): string {
     : text;
 }
 
+/** Both Pi and omp expose the same tool APIs, so the session location identifies omp. */
+export function isOmp(ctx?: ExtensionContext): boolean {
+  return /[\\/]\.omp[\\/]/.test(ctx?.sessionManager?.getSessionFile?.() ?? "");
+}
+
+/** The manual as Pi renders a section, for a host that takes bare system-prompt blocks. */
+function sectionText(text: string): string {
+  return `<${SECTION}>\n${text}\n</${SECTION}>`;
+}
+
 export default function tokeneconomizer(pi: ExtensionAPI) {
   let manual = "";
   let prompts = 0;
@@ -162,11 +179,19 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
 
   pi.on("session_start", async (event, ctx) => {
     prompts = 0;
+    const omp = isOmp(ctx);
     const entries = (ctx.sessionManager.getBranch?.() ?? []) as any[];
     const carried = entries.some((e) => e?.type === "message");
-    const source = carried ? "resume" : SOURCE[event.reason] ?? "startup";
+    // omp rebuilds the system prompt for a resumed session instead of replaying what the
+    // extension appended, so the facts are asked for again: "startup" is the source that makes
+    // the dispatcher offer them (the same text, so the conversation stays cache-stable).
+    const source = omp ? "startup" : carried ? "resume" : SOURCE[event.reason] ?? "startup";
     const out = await hook({ ...base(ctx), hook_event_name: "SessionStart", source }, ctx.mode);
-    manual = carried ? carriedSection(entries) : out?.hookSpecificOutput?.additionalContext ?? "";
+    manual = omp
+      ? out?.hookSpecificOutput?.additionalContext ?? ""
+      : carried
+        ? carriedSection(entries)
+        : out?.hookSpecificOutput?.additionalContext ?? "";
     notify(ctx, out?.systemMessage);
   });
 
@@ -184,8 +209,15 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
       manual = manual ? `${manual}\n\n${extra}` : extra;
     }
     notify(ctx, out?.systemMessage);
-    if (manual) {
-      event.systemPromptOptions.sections = { ...(event.systemPromptOptions.sections ?? {}), [SECTION]: manual };
+    if (!manual) return;
+    const options = (event as any).systemPromptOptions;
+    if (options) {
+      options.sections = { ...(options.sections ?? {}), [SECTION]: manual };
+      return;
+    }
+    // omp hands the system prompt over as blocks and takes a replacement array back.
+    if (Array.isArray((event as any).systemPrompt)) {
+      return { systemPrompt: [...(event as any).systemPrompt, sectionText(manual)] };
     }
   });
 

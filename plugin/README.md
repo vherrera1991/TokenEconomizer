@@ -349,6 +349,38 @@ after the loop guard's redirect gets a notice: press **Esc** to abort it, or Ctr
 
 **3. Work normally.** See [What to expect](#what-to-expect).
 
+### oh-my-pi (`omp`)
+
+`omp` is a Pi fork and loads this same extension. Install it as an `omp` plugin, from a clone:
+
+```bash
+omp plugin install /path/to/TokenEconomizer/plugin
+```
+
+To try it without touching the plugin config, start a session with
+`omp --extension /path/to/TokenEconomizer/plugin/pi/tokeneconomizer.ts`. `omp` also honours Pi's
+`pi.extensions` manifest key, which this package's `plugin/package.json` carries.
+
+What differs, and why (verified on omp 18.22.0):
+
+- **The manual is appended to the system prompt, not set as a section.** `omp`'s
+  `before_agent_start` carries `systemPrompt: string[]` and no `systemPromptOptions`, so the
+  extension returns a replacement array with a `<tokeneconomizer>` block on it.
+- **The facts are injected at every session start, resumed ones included.** `omp` rebuilds the
+  system prompt instead of replaying what an extension appended, so a resumed session would
+  otherwise start with no facts.
+- **Sessions fold on the Pi host.** `omp` keeps them under `~/.omp/agent/sessions`, in Pi's
+  entry format with a leading `title` line; the reader scans past it for the `session` header,
+  so the converted envelope keeps the cwd its shell commands ran in. `te` from a shell inside
+  `omp` resolves to `pi`: `omp` exports `OMPCODE=1` next to the `CLAUDECODE=1` that would
+  otherwise make `te` read the state as Claude Code's.
+- **Tool pruning does not apply**, as on Pi.
+- **The plugin's own model calls still run `pi`**, not `omp` (the proposer and the judge). They
+  need a working Pi install; facts that need no model call are learned either way.
+- `/te` runs through `omp`'s own `registerCommand`, so it is available on the same session
+  command surface as the other extensions.
+
+
 **Model calls.** The proposer and the loop guard's judge run `pi --print` with no extensions,
 on your default model (`paid_model` names another). If that model's provider comes from an
 extension (a company gateway, a package's provider), list the extension's file in

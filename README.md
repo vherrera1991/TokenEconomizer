@@ -288,6 +288,7 @@ uninstalling, using Copilot with your own model key, and troubleshooting.
 | Codex | 0.153.1 to 0.164.0 | not supported |
 | Copilot CLI | 1.0.83 to 1.0.102 | not supported |
 | Pi | 1.2.0 to 1.3.0 | 0.99.x: load the extension by path (below) |
+| oh-my-pi (`omp`, fork-local) | 18.22.0 (macOS) | not tested |
 | Cursor Agent (experimental) | 3.24.9 and cursor-agent 2026.11.05, macOS and Linux (below) | not tested |
 | Grok Build (experimental) | 1.0.70 | not tested |
 | opencode (experimental) | 1.19.5 and 2.2.0 | not tested |
@@ -340,7 +341,7 @@ commands. They have the same names on every agent; only the way you type them di
 |---|---|
 | Claude Code, Copilot CLI | `/tokeneconomizer:<command>` |
 | Codex | `$tokeneconomizer:<command>` |
-| Pi | `/te <command>` |
+| Pi, oh-my-pi (`omp`) | `/te <command>` |
 | opencode | from a terminal: `~/.tokeneconomizer/bin/te --host opencode <command>` |
 | Cursor Agent | from a terminal: `~/.tokeneconomizer/bin/te --host cursor <command>` |
 | Grok Build | from a terminal: `~/.tokeneconomizer/bin/te --host grok <command>` |

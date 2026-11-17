@@ -1,4 +1,5 @@
 """Trace seam: load_trajectory / tool_usage / parse_catalog over synthetic transcripts."""
+import json
 import os
 
 from tokeneconomizer import trace
@@ -251,6 +252,28 @@ def test_a_pi_session_counts_the_prompts_on_its_active_branch(tmp_path):
         msg("x", "b", "user"), msg("y", "x", "assistant"),        # abandoned
         msg("c", "b", "user"), msg("d", "c", "toolResult"), msg("e", "d", "assistant")])
     assert trace.pi_prompt_count(p) == 2
+
+
+def test_an_omp_session_is_read_past_its_leading_title_line(tmp_path):
+    """omp (a Pi fork that loads the same extension) writes a `title` entry before the `session`
+    header and stamps every entry with an ISO timestamp. A reader that only checks entry 0 for
+    the header loses the cwd its shell commands ran in, without failing."""
+    def msg(eid, parent, role, text):
+        return {"type": "message", "id": eid, "parentId": parent,
+                "timestamp": "2026-11-17T10:00:00.000Z",
+                "message": {"role": role, "content": [{"type": "text", "text": text}]}}
+    p = _jsonl(tmp_path / "omp.jsonl", [
+        {"type": "title", "v": 1, "title": "work"},
+        {"type": "session", "version": 3, "id": "s", "cwd": "/repo"},
+        {"type": "model_change", "id": "m", "parentId": None},
+        msg("a", None, "user", "run the tests"),
+        msg("b", "a", "assistant", "done")])
+    assert trace.pi_session_header(p)["cwd"] == "/repo"
+    out = str(tmp_path / "converted.jsonl")
+    assert trace.pi_session_to_claude(p, out) == 0
+    first = json.loads(open(out, encoding="utf-8").readline())
+    assert first["cwd"] == "/repo"
+    assert first["timestamp"] == "2026-11-17T10:00:00.000Z"
 
 
 # Valid JSON that is not an object. A reader that takes every line for a record calls `.get` on

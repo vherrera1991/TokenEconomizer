@@ -637,6 +637,31 @@ console.log(JSON.stringify([
     assert json.loads(run.stdout) == ["", facts, facts, "", "", facts]
 
 
+def test_omp_detection_uses_session_location():
+    """Pi also exposes omp's tool APIs, so only the session location identifies omp."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    ext = os.path.join(PLUGIN, "pi", "tokeneconomizer.ts")
+    script = r"""
+const { pathToFileURL } = await import("node:url");
+const { isOmp } = await import(pathToFileURL(process.argv[1]).href);
+const ctx = (path) => ({ sessionManager: { getSessionFile: () => path } });
+console.log(JSON.stringify([
+  isOmp(ctx("/home/user/.omp/agent/sessions/session.jsonl")),
+  isOmp(ctx("/home/user/.pi/agent/sessions/session.jsonl")),
+  isOmp(ctx("C:\\Users\\user\\.omp\\agent\\sessions\\session.jsonl")),
+]));
+"""
+    run = subprocess.run([node, "--experimental-strip-types", "--no-warnings",
+                          "--input-type=module", "-e", script, ext],
+                         capture_output=True, text=True, timeout=60)
+    if run.returncode and "strip-types" in run.stderr:
+        pytest.skip("this node cannot load TypeScript")
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == [True, False, True]
+
+
 def test_the_plugin_directory_is_also_a_pi_package():
     """One directory, three agents: Pi loads the extension its `pi` manifest names, and that
     extension drives the same launchers the Claude Code and Codex hooks run."""

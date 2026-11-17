@@ -1330,6 +1330,10 @@ def default_host(env=None, recent=None):
     env = os.environ if env is None else env
     if env.get("TE_HOST") in HOSTS:
         return env["TE_HOST"]
+    # oh-my-pi (omp) is a Pi fork that also exports CLAUDECODE=1 from its shells, so it has to
+    # be read before Claude Code: its sessions are folded on the Pi host.
+    if env.get("OMPCODE") == "1":
+        return "pi"
     if env.get("CLAUDECODE") == "1":
         return "claude"
     if env.get("COPILOT_CLI") == "1":
