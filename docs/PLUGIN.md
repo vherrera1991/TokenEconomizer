@@ -1,11 +1,12 @@
 # The plugin: design and verified agent behaviour
 
 How the plugin runs the three mechanisms inside your own Claude Code, Codex, Copilot CLI, Pi,
-opencode, Cursor, Grok Build, Hermes Agent, Antigravity CLI and Factory Droid sessions, through the hooks (on Pi, the extension events) each agent
-exposes: what it does at each hook, what differs from the experiments and why, the agent
-behaviour each choice rests on, where its state lives, and its known limitations. The code is `tokeneconomizer/plugin/` (what
-the hooks run) and `plugin/` (the packaging for each agent). To install and use it, see
-[`plugin/README.md`](../plugin/README.md).
+oh-my-pi (a Pi fork reusing the same extension), opencode, Cursor, Grok Build, Hermes Agent,
+Antigravity CLI and Factory Droid sessions, through the hooks (on Pi and oh-my-pi, the extension
+events) each agent exposes: what it does at each hook, what differs from the experiments and why,
+the agent behaviour each choice rests on, where its state lives, and its known limitations. The
+code is `tokeneconomizer/plugin/` (what the hooks run) and `plugin/` (the packaging for each
+agent). To install and use it, see [`plugin/README.md`](../plugin/README.md).
 
 ---
 
@@ -87,7 +88,7 @@ event): no nudge is counted, and there is no one left to redirect.
 | Unit of work | one benchmark task | a **session** for micro-skills and tool pruning; a **prompt-turn** for the loop guard | In interactive use a person already splits work into short turns. A whole session folded as one trajectory would look stuck merely by being long |
 | Learning signal | the official grader's `resolved` | the envelope learns from turns that **ended green**: the agent stopped on its own, was not stopped by the guard, and no verification after its last edit failed | There is no grader. Micro-skills and evidence pruning never needed one |
 | Injection channel | a prefix on the task prompt | `SessionStart` `additionalContext` | Verified to reach the model (§3) |
-| Tool removal | `--disallowed-tools` / Codex config at launch | a **deny list**, applied by default once the evidence forms it and the repository's sessions have been idle longer than a prompt cache lives (§3), and announced at the next session start (`toolprune=propose` waits for approval instead), written to the repository's own settings file — tools in `.claude/settings.local.json`, Codex capability packages in `.codex/config.toml`, Copilot MCP servers in `.github/copilot/settings.local.json` — effective from the **next** session | The plugin launches nothing. A session keeps the tools it started with, but a conversation resumed after a change sends the new ones, re-writing its cached prefix, hence the idle wait. Each agent's file can express a different unit (§3) |
+| Tool removal | `--disallowed-tools` / Codex config at launch | a **deny list**, applied by default once the evidence forms it and the repository's sessions have been idle longer than a prompt cache lives (§3), and announced at the next session start (`toolprune=propose` waits for approval instead), written to the repository's own settings file — tools in `.claude/settings.local.json`, Codex capability packages in `.codex/config.toml`, Copilot MCP servers in `.github/copilot/settings.local.json` — effective from the **next** session (on oh-my-pi, which persists no active set, the extension applies it at runtime with `setActiveTools` and writes no file) | The plugin launches nothing. A session keeps the tools it started with, but a conversation resumed after a change sends the new ones, re-writing its cached prefix, hence the idle wait. Each agent's file can express a different unit (§3) |
 | Pruning candidates | `toolprune.tools.INAPPLICABLE_TOOLS` — orchestration, Q&A, plan mode, web — "inapplicable by construction" for a sealed headless task | nothing is inapplicable by construction; only **evidence** (never used, and unused over `toolprune_evidence` prompts (10) across at least `toolprune_min_sessions` sessions (2), or over `toolprune_sessions` sessions (5)) proposes a tool, and a person's tools — AskUserQuestion, plan mode, sub-agents, the web — are protected | A person asks questions, plans and browses in a real session. A deny rule the plugin wrote for a tool that has since become protected is given back at the next fold |
 | Network | every arm, baseline included, carries an answer-key guard — a `PreToolUse` hook and an `/etc/hosts` block refuse the benchmarks' upstream sources — and drops the web tools | **no guard**: no `PreToolUse` hook (on Pi, no `tool_call` handler), no blocked command or host; the web tools stay | A benchmark's answer is a fetch away. A real session has no answer key, and the web is part of the work |
 | Who decides a turn is stuck | in the guard's arms, the trace judge, woken by the rule gate or by a turn past the envelope (the agents ran under a turn cap); without a judge, the strict rule | **always the judge** when the guard is on, woken only by a sign of trouble (a repeated failure, or dense errors) after `min_turns` calls, and never before the repository has an envelope; a `productive` or ambiguous verdict spares the turn (at the `aggressive` preset an ambiguous one past the envelope gets the redirect). The hard backstop (far past the envelope AND the strict stall rule) still acts without it. While the agent's model calls are paused, the judge gives no verdict and only the backstop acts | The rule alone redirected turns that had found their cause and were working around it (§5); interactive turns outrun a small envelope all the time, so the envelope alone wakes nothing |
@@ -326,6 +327,30 @@ settings would be):
   0.99.2 rejects `--no-mcp`, so the call retries without it.
 * Not yet exercised: `pi install git:github.com/…` against GitHub itself, which needs the
   root manifest pushed.
+
+**oh-my-pi 18.22.0 — verified on macOS** (`omp`, a Pi fork, loading the same
+`plugin/pi/tokeneconomizer.ts`; [its differences](../plugin/README.md#oh-my-pi-omp)):
+
+* `omp`'s `before_agent_start` carries `systemPrompt: string[]` and no `systemPromptOptions`, so
+  the extension returns that array with a `<tokeneconomizer>` block appended rather than setting
+  Pi's named section. It offers the facts again at every start: `omp` rebuilds the system prompt
+  instead of replaying an extension's section, so a resumed session would otherwise carry none.
+* Sessions are Pi's entry format under `~/.omp/agent/sessions`, with a `{"type": "title"}` line
+  before the `session` header; `pi_session_header` scans past it, so the envelope keeps the cwd
+  its commands ran in. `omp` exports `OMPCODE=1` beside the `CLAUDECODE=1` that would otherwise
+  read its state as Claude Code's, and `te` resolves the host as `pi`.
+* The live loop guard runs in the extension: `before_agent_start` opens the turn, `tool_result`
+  folds it, and a redirect goes out as a steering message. Python's `Stop` and `SessionEnd` still
+  record the envelope and hand the session to the fold, and the background judge is still a
+  Python job (`te --host pi judge`), which calls `omp --print --mode json` for its model.
+* Tool pruning. `omp` persists no active set: the extension records the loaded tools as the
+  catalog at session start, and under `toolprune=auto` applies the pending deny list with
+  `setActiveTools` at each start or switch, writing no settings file and keeping `omp`'s own
+  essential tools. Per-tool `restore` is not available there yet.
+* Not wired: `repomap=on`'s prompt-ranked map has no delivery path through the native prompt
+  here, so its `off` default and `repomap=start` are what apply.
+* Not yet exercised live: a native-guard redirect and the background judge job; the extension and
+  parity tests cover both.
 
 **opencode 1.19.5 and 2.2.0 — verified live, 2026-10-29** (scripted local model endpoint; on
 1.19.5 also the free `opencode/big-pickle`; the 2.x entry also runs against 2.2.5 in CI):

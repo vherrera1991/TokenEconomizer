@@ -349,9 +349,22 @@ after the loop guard's redirect gets a notice: press **Esc** to abort it, or Ctr
 
 **3. Work normally.** See [What to expect](#what-to-expect).
 
-### oh-my-pi (`omp`)
+**Model calls (Pi only).** The proposer and the loop guard's judge run `pi --print` with no
+extensions, on your default model (`paid_model` names another). If that model's provider comes
+from an extension (a company gateway, a package's provider), list the extension's file in
+`pi_extensions` so the calls can reach it; it loads with no tools. If the first `pi` on your PATH
+is a wrapper the calls should not run, set `pi_cli` to the real one.
 
-`omp` is a Pi fork and loads this same extension. Install it as an `omp` plugin, from a clone:
+**Update.** `pi update --extensions` (plain `pi update` does not update extensions).
+
+**Uninstall.** `pi remove git:github.com/microsoft/TokenEconomizer` (the source you installed
+from); `pi config` turns it off without removing it. Optional: `rm -rf ~/.tokeneconomizer`.
+
+## oh-my-pi (`omp`)
+
+`omp` is a Pi fork and loads this same extension.
+
+**1. Install.** As an `omp` plugin, from a clone:
 
 ```bash
 omp plugin install /path/to/TokenEconomizer/plugin
@@ -361,7 +374,12 @@ To try it without touching the plugin config, start a session with
 `omp --extension /path/to/TokenEconomizer/plugin/pi/tokeneconomizer.ts`. `omp` also honours Pi's
 `pi.extensions` manifest key, which this package's `plugin/package.json` carries.
 
-What differs, and why (verified on omp 18.22.0):
+**2. Check it.** Start a new `omp` session and run `/te status`; from a terminal, inside the
+repository, `~/.tokeneconomizer/bin/te --host pi status` is the Pi host state.
+
+**3. Work normally.** See [What to expect](#what-to-expect).
+
+What differs, and why (verified on omp 18.22.0, except where a bullet says otherwise):
 
 - **The manual is appended to the system prompt, not set as a section.** `omp`'s
   `before_agent_start` carries `systemPrompt: string[]` and no `systemPromptOptions`, so the
@@ -379,23 +397,22 @@ What differs, and why (verified on omp 18.22.0):
   `setActiveTools` at every session start or switch because `omp` does not persist the active set.
   No settings file is written, and `omp` keeps its own essential tools. `toolprune=off` restores
   all tools next session; per-tool `restore` is not available on `omp` yet.
+- **The live loop guard is native in the extension.** `before_agent_start` opens the turn and
+  `tool_result` folds it, and a redirect goes out as a steering message. Python's `Stop` and
+  `SessionEnd` still record the envelope and fold the session, and the background judge is still
+  a Python job, which calls `omp` for the model. Neither a redirect nor a judge job was exercised
+  live on `omp`; the extension and parity tests cover both.
 - **The plugin's own model calls run `omp --print --mode json`** through the omp binary running
   the extension, using omp's model, authentication and configuration; Pi is not required. Python
   still performs the learning and fold work.
+- **`repomap=on` is not wired to this prompt path yet.** Its prompt-ranked map has no delivery
+  path here; the default `off` and `repomap=start` (the cached map at session start) are
+  unaffected.
 - `/te` runs through `omp`'s own `registerCommand`, so it is available on the same session
   command surface as the other extensions.
 
-
-**Model calls.** The proposer and the loop guard's judge run `pi --print` with no extensions,
-on your default model (`paid_model` names another). If that model's provider comes from an
-extension (a company gateway, a package's provider), list the extension's file in
-`pi_extensions` so the calls can reach it; it loads with no tools. If the first `pi` on your PATH
-is a wrapper the calls should not run, set `pi_cli` to the real one.
-
-**Update.** `pi update --extensions` (plain `pi update` does not update extensions).
-
-**Uninstall.** `pi remove git:github.com/microsoft/TokenEconomizer` (the source you installed
-from); `pi config` turns it off without removing it. Optional: `rm -rf ~/.tokeneconomizer`.
+**Update.** `git pull` in the clone (the local plugin install is a link), or `omp plugin upgrade`
+for a marketplace install.
 
 ## Cursor
 

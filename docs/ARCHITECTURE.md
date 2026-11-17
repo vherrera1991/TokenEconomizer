@@ -6,7 +6,8 @@ standard-library-only package `tokeneconomizer`:
 
 - `tokeneconomizer.trace` is the one place a saved session log is read (`load_trajectory`,
   `call_cwds`, `tool_usage`, `parse_catalog`), with one module per agent's format. A new agent
-  needs a reader here and nothing else.
+  needs a reader here and nothing else. oh-my-pi (`omp`, a Pi fork) reuses `trace/pi.py`: its
+  header scan skips the `title` entry `omp` writes before the session header.
 - `tokeneconomizer.ledger` and `tokeneconomizer.pricing` are the one definition of cost.
   Mechanisms record their per-task overhead (in the plugin, a session counts as one task); the
   plugin's session ledger and the experiments' aggregation read it back through the same modules,

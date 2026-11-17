@@ -68,9 +68,9 @@ mechanisms:
   turn is still stuck after that, TokenEconomizer tells you how to stop it; it never stops a turn
   itself.
 
-TokenEconomizer is a plugin for **Claude Code**, **Codex**, the **GitHub Copilot CLI** and **Pi**,
-with experimental support for **opencode**, **Cursor Agent**, **Grok Build**, **Hermes Agent**,
-the **Antigravity CLI** and **Factory Droid**. Each italic
+TokenEconomizer is a plugin for **Claude Code**, **Codex**, the **GitHub Copilot CLI**, **Pi** and
+**oh-my-pi** (`omp`, a Pi fork), with experimental support for **opencode**, **Cursor Agent**,
+**Grok Build**, **Hermes Agent**, the **Antigravity CLI** and **Factory Droid**. Each italic
 letter above is a setting, shown with its default ([Settings](#settings)), and each mechanism can be turned on or
 off. The plugin announces each action in one line, and if any part of it fails, your session
 carries on as if it were not installed. Its model calls (the fact proposer, and the judge with the
@@ -120,8 +120,8 @@ login works.
 ### Install
 
 Run these commands in the folder where you want to keep the clone. Claude Code, Codex, the
-Copilot CLI and opencode run the plugin from the clone, so leave it in place. Then start the agent
-in one of your repositories.
+Copilot CLI, oh-my-pi and opencode run the plugin from the clone, so leave it in place. Then start
+the agent in one of your repositories.
 
 **Claude Code**
 
@@ -171,6 +171,15 @@ pi install git:github.com/microsoft/TokenEconomizer
 ```
 
 Start `pi` and run `/te status`.
+
+**oh-my-pi** (`omp`, a Pi fork; [the differences](plugin/README.md#oh-my-pi-omp))
+
+```sh
+git clone https://github.com/microsoft/TokenEconomizer.git
+omp plugin install "$PWD/TokenEconomizer/plugin"
+```
+
+Start `omp` and run `/te status`.
 
 **Factory Droid** (experimental; micro-skills, the loop guard and session cost, not tool pruning)
 
@@ -276,6 +285,7 @@ To update:
 | Antigravity CLI | build the bundle again and `agy plugin install` it |
 | Codex | `git pull` in the clone, then the `codex plugin add` line again |
 | Pi | `pi update --extensions` |
+| oh-my-pi (`omp`) | `git pull` in the clone (the local plugin install is a link); for a marketplace install, `omp plugin upgrade` |
 
 **[`plugin/README.md`](plugin/README.md)** walks through each agent in more detail, including
 uninstalling, using Copilot with your own model key, and troubleshooting.
