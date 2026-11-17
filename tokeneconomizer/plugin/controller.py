@@ -105,6 +105,18 @@ class LiveController:
         handler = self.handler(event)
         return hookqueue.run(self, event, handler) if handler else {}
 
+    def _guard_view(self):
+        if self.host.name != "pi":
+            return None
+        tracker = loopguard.load_envelope(self.store, level=self.cfg.loopguard_aggr,
+                                          overrides=self.cfg.loopguard_thresholds)
+        envelope = tracker.envelope
+        return {"enabled": self.cfg.loopguard != "off", "loopguard": self.cfg.loopguard,
+                "shadow": bool(self.cfg.shadow), "aggr": self.cfg.loopguard_aggr,
+                "nudge_budget": int(self.cfg.loopguard_nudges), "envelope": envelope,
+                "thresholds": loopguard.thresholds(tracker, self.cfg.loopguard_thresholds),
+                "judge": envelope is not None and self.cfg.loopguard != "off"}
+
     # ---- SessionStart -----------------------------------------------------------------
     def session_start(self):
         source = self.p.get("source") or "startup"
@@ -156,9 +168,15 @@ class LiveController:
                 and not self.cfg.shadow):
             outputs.extend(self._toolprune_notices(seen))
 
+        extra = {}
         apply = self._omp_toolprune_apply()
         if apply:
-            outputs.append({"tokeneconomizer": {"toolprune": {"apply": apply}}})
+            extra["toolprune"] = {"apply": apply}
+        guard = self._guard_view()
+        if guard is not None:
+            extra["guard"] = guard
+        if extra:
+            outputs.append({"tokeneconomizer": extra})
 
         pause = sidecall.paused(self.host.name, self.ctx.root)
         calls_a_model = "distiller" in self.cfg.microskills or self.cfg.loopguard != "off"
@@ -342,7 +360,8 @@ class LiveController:
         if summary:
             self._log("turn", **summary)
         self._save(s)
-        return {}
+        guard = self._guard_view()
+        return {"tokeneconomizer": {"guard": guard}} if guard is not None else {}
 
     # ---- PostToolUse ---------------------------------------------------------------------
     def _judge(self, thr, envelope):

@@ -101,11 +101,11 @@ def test_omp_imported_evidence_does_not_schedule_pruning(tmp_path):
     assert "auto_pending" not in doc
     assert not os.path.exists(os.path.join(repo, ".pi", "settings.json"))
     payload["session_id"] = "live"
-    assert "tokeneconomizer" not in call(env, payload, "pi")
+    assert "toolprune" not in call(env, payload, "pi")["tokeneconomizer"]
     fold.fold_session(ctx, "live")
     assert not store.read("untool.json").get("needs_apply")
     payload["session_id"] = "live-again"
-    assert "tokeneconomizer" not in call(env, payload, "pi")
+    assert "toolprune" not in call(env, payload, "pi")["tokeneconomizer"]
     fold.fold_session(ctx, "live-again")
     assert store.read("untool.json")["needs_apply"] == ["browser"]
     with ctx.store.locked("fold") as locked:
@@ -125,13 +125,40 @@ def test_omp_session_start_applies_pending_toolprune(tmp_path):
         "untool.json", {"needs_apply": ["bash", "bash", 1], "proposal": ["bash"]})
     payload = {"hook_event_name": "SessionStart", "session_id": "s", "cwd": repo}
     result = call(env, payload, "pi")
-    assert result["tokeneconomizer"] == {"toolprune": {"apply": ["bash"]}}
+    assert result["tokeneconomizer"]["toolprune"] == {"apply": ["bash"]}
+    assert "guard" in result["tokeneconomizer"]
     assert "toolprune" not in result.get("systemMessage", "")
-    assert "tokeneconomizer" not in call({k: v for k, v in env.items()
-                                          if k != "TE_OMP_SIDECALL"}, payload, "pi")
+    assert "toolprune" not in call({k: v for k, v in env.items()
+                                    if k != "TE_OMP_SIDECALL"}, payload, "pi")["tokeneconomizer"]
     for mode in ("propose", "off"):
-        assert "tokeneconomizer" not in call(dict(env, TE_TOOLPRUNE=mode), payload, "pi")
-    assert "tokeneconomizer" not in call(dict(env, TE_SHADOW="1"), payload, "pi")
+        assert "toolprune" not in call(dict(env, TE_TOOLPRUNE=mode), payload, "pi")["tokeneconomizer"]
+    assert "toolprune" not in call(dict(env, TE_SHADOW="1"), payload, "pi")["tokeneconomizer"]
+    assert "tokeneconomizer" not in call(env, payload, "claude")
+
+
+def test_pi_guard_view(tmp_path):
+    from tests.test_live_hooks import call, store_for
+    from tokeneconomizer.loopguard.rules import DEFAULT_THRESHOLDS
+
+    repo = _git_repo(str(tmp_path / "repo"))
+    env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1",
+           "TE_MICROSKILLS": "off", "PATH": os.environ.get("PATH", "")}
+    payload = {"hook_event_name": "SessionStart", "session_id": "s", "cwd": repo}
+    guard = call(env, payload, "pi")["tokeneconomizer"]["guard"]
+    assert guard == {"enabled": True, "loopguard": "nudge", "shadow": False,
+                     "aggr": "default", "nudge_budget": 1, "envelope": None,
+                     "thresholds": DEFAULT_THRESHOLDS, "judge": False}
+    store_for(env, repo, host="pi").write(
+        "envelope.json", {"resolved_turns": [10, 12, 14, 16, 18], "resolved_snaps": []})
+    guard = call(env, payload, "pi")["tokeneconomizer"]["guard"]
+    assert isinstance(guard["envelope"], float)
+    assert guard["judge"] is True
+    off = call(dict(env, TE_LOOPGUARD="off"), payload, "pi")["tokeneconomizer"]["guard"]
+    assert off["enabled"] is False and off["judge"] is False
+    stop = dict(payload, hook_event_name="Stop")
+    assert call(env, stop, "pi")["tokeneconomizer"]["guard"] == guard
+    assert call(dict(env, TE_LOOPGUARD="off"), stop, "pi") == {}
+    assert call(env, dict(stop, stop_hook_active=True), "pi") == {}
     assert "tokeneconomizer" not in call(env, payload, "claude")
 
 

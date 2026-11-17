@@ -1044,7 +1044,8 @@ def pi_trap_session(path, repo, i):
 def test_pi_learns_from_its_own_session_files_and_injects_at_the_next_start(env, repo, tmp_path):
     starts = [run_session(env, repo, f"pi{i}", pi_trap_session(str(tmp_path / f"p{i}.jsonl"), repo, i),
                           host="pi") for i in range(5)]
-    assert all(s == {} for s in starts[:4])
+    assert all(set(s) == {"tokeneconomizer"} and "guard" in s["tokeneconomizer"]
+               for s in starts[:4])
     ctx = starts[4]["hookSpecificOutput"]["additionalContext"]
     assert "`python -m pytest …` works." in ctx
     assert "/te microskills" in starts[4]["systemMessage"]  # Pi's own command name

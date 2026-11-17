@@ -34,6 +34,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import { TurnGuard } from "./guard/turn.ts";
+import { AsyncJudge } from "./guard/judge.ts";
+import { patchSession, readSession, resolvePaths } from "./guard/session.ts";
+import type { GuardPaths } from "./guard/session.ts";
 
 const HERE = (() => {
   try {
@@ -48,6 +53,11 @@ const SECTION = "tokeneconomizer";
 let ompHost = false;
 const ompEnv = (): Record<string, string> =>
   ompHost ? { TE_OMP_SIDECALL: "1", TE_OMP_CLI: process.execPath || "omp" } : {};
+let guardQueue: Promise<void> = Promise.resolve();
+type GuardView = {
+  enabled: boolean; loopguard: string; shadow: boolean; nudge_budget: number;
+  envelope: number | null; thresholds: Record<string, number | boolean>; judge: boolean;
+};
 
 const truthy = (v: string | undefined) => ["1", "true", "yes", "on"].includes((v ?? "").trim().toLowerCase());
 
@@ -185,6 +195,17 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
   let manual = "";
   let prompts = 0;
   let turn = "";
+  let guardView: GuardView | null = null;
+  let guardPaths: GuardPaths | null = null;
+  let turnGuard: TurnGuard | null = null;
+  let judge: AsyncJudge | null = null;
+  let nudges = 0, aborts = 0;
+  let current: { session_id: string; transcript_path: string; cwd: string } | null = null;
+
+  const persist = () => {
+    if (guardPaths && turnGuard)
+      patchSession(guardPaths, { turn: turnGuard.to_dict(), nudges, aborts, updated: Date.now() / 1000 });
+  };
 
   const base = (ctx: ExtensionContext) => ({
     session_id: ctx.sessionManager.getSessionId(),
@@ -210,6 +231,14 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
       }
     }
     const out = await hook(payload, ctx.mode);
+    current = base(ctx);
+    guardView = out?.tokeneconomizer?.guard ?? null;
+    turnGuard = null;
+    judge = null;
+    guardPaths = resolvePaths(process.env.TOKENECONOMIZER_HOME || join(homedir(), ".tokeneconomizer"), current.session_id);
+    const record = guardPaths && readSession(guardPaths);
+    nudges = Number(record?.nudges ?? 0);
+    aborts = Number(record?.aborts ?? 0);
     manual = omp
       ? out?.hookSpecificOutput?.additionalContext ?? ""
       : carried
@@ -239,24 +268,18 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
   });
 
   pi.on("session_switch", async (event, ctx) => {
+    await guardQueue;
+    persist();
+    if (current) await hook({ ...current, hook_event_name: "SessionEnd", reason: "switch" }, ctx.mode);
     ompHost = isOmp(ctx);
     await openSession(SOURCE[event.reason] ?? "startup", ctx, ompHost);
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
     prompts += 1;
-    turn = `${ctx.sessionManager.getSessionId()}:${prompts}`;
-    const out = await hook(
-      { ...base(ctx), hook_event_name: "UserPromptSubmit", prompt_id: turn, prompt: event.prompt },
-      ctx.mode,
-    );
-    // The repository map arrives on a session's first prompt; it joins the manual for the rest
-    // of the session, since the section is set again on every prompt.
-    const extra = out?.hookSpecificOutput?.additionalContext;
-    if (extra) {
-      manual = manual ? `${manual}\n\n${extra}` : extra;
-    }
-    notify(ctx, out?.systemMessage);
+    turn = `${current?.session_id ?? ctx.sessionManager.getSessionId()}:${prompts}`;
+    turnGuard = guardView?.enabled && guardPaths ? new TurnGuard(turn) : null;
+    persist();
     if (!manual) return;
     const options = (event as any).systemPromptOptions;
     if (options) {
@@ -270,35 +293,66 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
   });
 
   pi.on("tool_result", async (event, ctx) => {
-    const content = (event.content ?? [])
-      .filter((c: any) => c?.type === "text")
-      .map((c: any) => c.text)
-      .join("\n");
-    const out = await hook(
-      {
-        ...base(ctx),
-        hook_event_name: "PostToolUse",
-        prompt_id: turn,
-        tool_name: event.toolName,
-        tool_use_id: event.toolCallId,
-        tool_input: event.input ?? {},
-        tool_response: { content, isError: event.isError, exit_code: exitCodeOf(event) },
-      },
-      ctx.mode,
-    );
-    const nudge = out?.hookSpecificOutput?.additionalContext;
-    if (nudge) {
-      pi.sendMessage({ customType: SECTION, content: nudge, display: true }, { deliverAs: "steer" });
-    }
-    notify(ctx, out?.systemMessage);
+    const work = guardQueue.then(() => {
+      if (!turnGuard || !guardPaths || !guardView?.enabled || guardView.loopguard === "off") return;
+      const content = (event.content ?? [])
+        .filter((c: any) => c?.type === "text")
+        .map((c: any) => c.text)
+        .join("\n");
+      if (guardView.judge && !judge) {
+        judge = new AsyncJudge(guardPaths, current!.session_id, Number(guardView.thresholds?.judge_confidence || 0),
+          current!.cwd, { ...process.env, ...ompEnv(), TE_SIDECALL: "1" }, (script, args, env, cwd) => {
+            const [program, argv] = launch(script, args);
+            const child = spawn(program, argv, { env, cwd, detached: true, stdio: "ignore" });
+            child.on("error", () => {});
+            child.unref();
+          });
+      }
+      const decision = turnGuard.fold(event.toolName, event.input ?? {}, content, exitCodeOf(event) ?? null, {
+        envelope: guardView.envelope ?? null, thr: guardView.thresholds ?? null,
+        judge: guardView.judge ? judge : null, nudge_budget: guardView.nudge_budget,
+      });
+      if (decision) {
+        const [action, reason] = decision;
+        const short = reason.split(":")[0];
+        if (action === "nudge") {
+          const body = turnGuard.nudge_body(guardView.envelope ?? null);
+          turnGuard.after_nudge();
+          nudges++;
+          if (!guardView.shadow) {
+            pi.sendMessage({ customType: SECTION, content: body, display: true }, { deliverAs: "steer" });
+            notify(ctx, `TokenEconomizer nudged this turn (${short}): the same failure kept recurring.`);
+          }
+        } else if (!turnGuard.abort_delivered) {
+          turnGuard.abort_delivered = true;
+          aborts++;
+          if (!guardView.shadow) {
+            const hint = ["print", "json", "rpc"].includes(ctx.mode)
+              ? "Press Ctrl+C to end the run; a command it started runs on until it finishes."
+              : "Press Esc to abort it.";
+            notify(ctx, `TokenEconomizer: this turn still looks stuck after a redirect (${short}, ${turnGuard.cum_turns} tool calls). ${hint}`);
+          }
+        }
+      }
+      persist();
+    });
+    guardQueue = work.catch(() => {});
+    await guardQueue;
   });
 
-  pi.on("agent_end", async (_event, ctx) => {
-    await hook({ ...base(ctx), hook_event_name: "Stop", prompt_id: turn, stop_hook_active: false }, ctx.mode);
+  pi.on("agent_end", async (event, ctx) => {
+    if ("willContinue" in event && event.willContinue === true) return;
+    await guardQueue;
+    persist();
+    const out = await hook({ ...base(ctx), hook_event_name: "Stop", prompt_id: turn, stop_hook_active: false }, ctx.mode);
+    guardView = out?.tokeneconomizer?.guard ?? null;
+    turnGuard = null;
   });
 
   pi.on("session_shutdown", async (event, ctx) => {
-    await hook({ ...base(ctx), hook_event_name: "SessionEnd", reason: event.reason }, ctx.mode);
+    await guardQueue;
+    persist();
+    await hook({ ...(current ?? base(ctx)), hook_event_name: "SessionEnd", reason: event.reason }, ctx.mode);
   });
 
   pi.registerCommand("te", {
